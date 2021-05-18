@@ -1,5 +1,10 @@
 // deno-lint-ignore-file camelcase ban-types
 
+import {
+    CreateEventContent, Event, PowerLevelsEventContent,
+    RoomEvent, Signed, StateEvent, MatrixEvent
+} from "./events.ts";
+
 export interface MatrixError {
     errcode: string;
     error: string;
@@ -59,12 +64,7 @@ interface ServerInformation {
     base_url: string;
 }
 
-interface MatrixEvent {
-    content: object;
-    type: string;
-}
-
-interface MatrixEvents<T extends MatrixEvent = MatrixEvent> {
+export interface MatrixEvents<T extends Event = Event> {
     events: T[];
 }
 
@@ -94,13 +94,13 @@ interface DeviceLists {
 }
 
 interface Rooms {
-    join?: Record<string, JoinedRoom | undefined>;
-    invite?: Record<string, InvitedRoom | undefined>;
-    leave?: Record<string, RoomUpdate | undefined>;
+    join?: Record<string, JoinedRoom>;
+    invite?: Record<string, InvitedRoom>;
+    leave?: Record<string, RoomUpdate>;
 }
 
 interface RoomUpdate {
-    state?: MatrixEvents<StateEvent>;
+    state?: MatrixEvents<MatrixEvent>;
     timeline?: Timeline;
     account_data?: MatrixEvents;
 }
@@ -122,36 +122,13 @@ interface RoomSummary {
     ["m.invited_member_count"]?: number;
 }
 
-interface RoomEvent extends MatrixEvent {
-    event_id: string;
-    sender: string;
-    origin_server_ts: number;
-    unsigned?: UnsignedData;
-}
-
-interface StateEvent extends RoomEvent {
-    prev_content?: StateEvent["content"];
-    state_key: string;
-}
-
-interface UnsignedData {
-    age?: number;
-    redacted_because?: MatrixEvent;
-    transaction_id?: string;
-}
-
-interface Timeline extends MatrixEvents<RoomEvent> {
+interface Timeline extends MatrixEvents<MatrixEvent> {
     limited?: boolean;
     prev_batch?: string;
 }
 
 interface InvitedRoom {
-    invite_state: MatrixEvents<StrippedStateEvent>;
-}
-
-interface StrippedStateEvent extends MatrixEvent {
-    state_key: string;
-    sender: string;
+    invite_state: MatrixEvents<MatrixEvent>;
 }
 
 type RoomVisibility = "public" | "private";
@@ -179,26 +156,6 @@ interface Invite3pid {
     address: string;
 }
 
-interface CreateEventContent {
-    creator: string;
-    ["m.federate"]: boolean;
-    room_version: string;
-    predecessor?: RoomEvent;
-}
-
-interface PowerLevelsEventContent {
-    ban?: number;
-    events?: Record<string, number>;
-    events_default?: number;
-    invite?: number;
-    kick?: number;
-    redact?: number;
-    state_default?: number;
-    users?: Record<string, number>;
-    users_default?: number;
-    notifications?: Record<string, number>;
-}
-
 export interface InviteRequest {
     user_id: string;
 }
@@ -211,9 +168,10 @@ export interface JoinResponse {
     room_id: string;
 }
 
-interface ThirdPartySigned {
+export interface ThirdPartySigned extends Signed {
     sender: string;
-    mxid: string;
-    token: string;
-    signatures: Record<string, Record<string, string>>;
+}
+
+export interface EventID {
+    event_id: string;
 }

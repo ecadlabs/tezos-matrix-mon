@@ -1,14 +1,8 @@
 import {
-    CreateRoomRequest,
-    InviteRequest,
-    JoinRequest,
-    JoinResponse,
-    LoginRequest,
-    LoginResponse,
-    MatrixError,
-    SyncRequest,
-    SyncResponse
+    CreateRoomRequest, EventID, InviteRequest, JoinRequest, JoinResponse, LoginRequest,
+    LoginResponse, MatrixError, SyncRequest, SyncResponse,
 } from "./types.ts";
+import { MessageContent } from "./events.ts";
 
 import sodium, { KeyPair } from "https://raw.githubusercontent.com/ecadlabs/sodium/0.2.1/basic.ts";
 
@@ -17,7 +11,7 @@ function hexBytes(bytes: number[] | Uint8Array): string {
 }
 
 // see https://github.com/airgap-it/beacon-node/blob/master/docker/crypto_auth_provider.py
-function makeCryptoAuthRequest(kp: KeyPair): LoginRequest {
+export function loginRequestFromKeyPair(kp: KeyPair): LoginRequest {
     const enquiry = sodium.from_string(`login:${Math.floor(Date.now() / 1000 / (5 * 60))}`);
     const digest = sodium.crypto_generichash(32, enquiry);
     const sig = sodium.crypto_sign_detached(digest, kp.privateKey);
@@ -32,6 +26,11 @@ function makeCryptoAuthRequest(kp: KeyPair): LoginRequest {
         password: `ed:${hexBytes(sig)}:${hexBytes(kp.publicKey)}`,
         device_id: hexBytes(kp.publicKey),
     };
+}
+
+export function idFromKeyPair(kp: KeyPair, relay: string): string {
+    const keyHash = sodium.crypto_generichash(32, kp.publicKey);
+    return `@${hexBytes(keyHash)}:${relay}`
 }
 
 const APIPrefix = "/_matrix/client/r0/";
@@ -62,7 +61,8 @@ class HTTPError extends Error {
 }
 
 interface RequestOptions {
-    options?: unknown;
+    args?: unknown[];
+    query?: unknown;
     body?: unknown;
     noAuth?: boolean;
 }
@@ -71,21 +71,21 @@ class HTTPMatrixClient {
     private setToken: (token: string) => void = () => undefined;
     private token = new Promise<string>((resolve) => { this.setToken = resolve });
 
-    constructor(public url: string) { }
+    constructor(private relay: string) { }
 
     public setAuthToken(token: string) {
-        console.log(token);
         this.setToken(token);
     }
 
     public async request(method: "POST", ep: "login", options: { body: LoginRequest, noAuth: true }): Promise<LoginResponse>;
-    public async request(method: "GET", ep: "sync", options: { options: SyncRequest }): Promise<SyncResponse>;
-    public async request(method: "POST", ep: "createRoom", options: { body: CreateRoomRequest }): Promise<unknown>;
-    public async request(method: "POST", ep: string, options: { body: InviteRequest }): Promise<unknown>;
+    public async request(method: "GET", ep: "sync", options: { query: SyncRequest }): Promise<SyncResponse>;
+    public async request(method: "POST", ep: "createRoom", options: { body: CreateRoomRequest }): Promise<JoinResponse>;
+    public async request(method: "POST", ep: string, options: { body: InviteRequest }): Promise<void>;
     public async request(method: "POST", ep: string, options: { body: JoinRequest }): Promise<JoinResponse>;
+    public async request(method: "PUT", ep: string, options: { body: MessageContent }): Promise<EventID>;
     public async request(method: string, ep: string, options?: RequestOptions, init?: RequestInit): Promise<unknown> {
-        const optstr = options?.options !== undefined ? buildOptions(options.options) : "";
-        const url = this.url + APIPrefix + ep + (optstr !== "" ? "?" + optstr : "");
+        const optstr = options?.query !== undefined ? buildOptions(options.query) : "";
+        const url = `https://${this.relay}${APIPrefix}${ep}${(optstr !== "" ? "?" + optstr : "")}`;
         const headers = new Headers(init?.headers);
         const reqInit = { ...init, method, headers };
 
@@ -114,24 +114,29 @@ export interface MatrixClientOptions {
 
 const DefaultTimeout = 30000;
 
-class MatrixClient {
-    private client: HTTPMatrixClient;
-    constructor(url: string, login: LoginRequest, private opt?: MatrixClientOptions) {
-        this.client = new HTTPMatrixClient(url);
-        this.client.request("POST", "login", { body: login, noAuth: true }).then(res => this.client.setAuthToken(res.access_token));
-        this.poll(opt?.timeout);
+export class MatrixClient extends HTTPMatrixClient {
+    private setLoginData: (data: LoginResponse) => void = () => undefined;
+    public loginData = new Promise<LoginResponse>((resolve) => { this.setLoginData = resolve });
+
+    private txcnt = 0;
+    get txID(): string {
+        return `${new Date().getTime()}-${this.txcnt++}`;
     }
 
-    private async poll(timeout: number = DefaultTimeout) {
+    constructor(relay: string, login: LoginRequest, private opt?: MatrixClientOptions) {
+        super(relay);
+        this.request("POST", "login", { body: login, noAuth: true }).then(res => {
+            this.setLoginData(res);
+            this.setAuthToken(res.access_token);
+        });
+    }
+
+    public async *poll(timeout: number = DefaultTimeout) {
         let since: string | undefined = undefined;
         while (true) {
-            const res: SyncResponse = await this.client.request("GET", "sync", { options: { timeout, since } });
+            const res: SyncResponse = await this.request("GET", "sync", { query: { timeout, since } });
             since = res.next_batch;
-            console.log(res);
+            yield res;
         }
     }
 }
-
-await sodium.ready;
-const kp = sodium.crypto_sign_keypair();
-const _matrix = new MatrixClient("https://matrix.papers.tech", makeCryptoAuthRequest(kp));
