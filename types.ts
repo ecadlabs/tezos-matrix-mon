@@ -1,8 +1,8 @@
-// deno-lint-ignore-file camelcase ban-types
+// deno-lint-ignore-file camelcase
 
 import {
     CreateEventContent, Event, PowerLevelsEventContent,
-    RoomEvent, Signed, StateEvent, MatrixEvent
+    Signed, StateEvent, MatrixEvent
 } from "./events.ts";
 
 export interface MatrixError {

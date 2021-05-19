@@ -1,8 +1,11 @@
+// deno-lint-ignore-file camelcase
+
+import { sprintf } from "https://deno.land/std@0.97.0/fmt/printf.ts";
 import {
     CreateRoomRequest, EventID, InviteRequest, JoinRequest, JoinResponse, LoginRequest,
     LoginResponse, MatrixError, SyncRequest, SyncResponse,
 } from "./types.ts";
-import { MessageContent } from "./events.ts";
+import { MessageContent, Event, RoomEvent } from "./events.ts";
 
 import sodium, { KeyPair } from "https://raw.githubusercontent.com/ecadlabs/sodium/0.2.1/basic.ts";
 
@@ -61,10 +64,10 @@ class HTTPError extends Error {
 }
 
 interface RequestOptions {
-    args?: unknown[];
     query?: unknown;
     body?: unknown;
     noAuth?: boolean;
+    init?: RequestInit;
 }
 
 class HTTPMatrixClient {
@@ -77,17 +80,17 @@ class HTTPMatrixClient {
         this.setToken(token);
     }
 
-    public async request(method: "POST", ep: "login", options: { body: LoginRequest, noAuth: true }): Promise<LoginResponse>;
-    public async request(method: "GET", ep: "sync", options: { query: SyncRequest }): Promise<SyncResponse>;
-    public async request(method: "POST", ep: "createRoom", options: { body: CreateRoomRequest }): Promise<JoinResponse>;
-    public async request(method: "POST", ep: string, options: { body: InviteRequest }): Promise<void>;
-    public async request(method: "POST", ep: string, options: { body: JoinRequest }): Promise<JoinResponse>;
-    public async request(method: "PUT", ep: string, options: { body: MessageContent }): Promise<EventID>;
-    public async request(method: string, ep: string, options?: RequestOptions, init?: RequestInit): Promise<unknown> {
+    public async request(method: "POST", options: { body: LoginRequest, noAuth: true }, ep: "login"): Promise<LoginResponse>;
+    public async request(method: "GET", options: { query: SyncRequest }, ep: "sync"): Promise<SyncResponse>;
+    public async request(method: "POST", options: { body: CreateRoomRequest }, ep: "createRoom"): Promise<JoinResponse>;
+    public async request(method: "POST", options: { body: InviteRequest }, ep: "rooms/%s/invite", ...args: [string]): Promise<void>;
+    public async request(method: "POST", options: { body: JoinRequest }, ep: "rooms/%s/join", ...args: [string]): Promise<JoinResponse>;
+    public async request(method: "PUT", options: { body: MessageContent }, ep: "rooms/%s/send/%s/%s", ...args: [string, string, string]): Promise<EventID>;
+    public async request(method: string, options: RequestOptions, ep: string, ...args: unknown[]): Promise<unknown> {
         const optstr = options?.query !== undefined ? buildOptions(options.query) : "";
-        const url = `https://${this.relay}${APIPrefix}${ep}${(optstr !== "" ? "?" + optstr : "")}`;
-        const headers = new Headers(init?.headers);
-        const reqInit = { ...init, method, headers };
+        const url = `https://${this.relay}${APIPrefix}${sprintf(ep, ...args.map(a => encodeURIComponent(String(a))))}${(optstr !== "" ? "?" + optstr : "")}`;
+        const headers = new Headers(options?.init?.headers);
+        const reqInit = { ...options?.init, method, headers };
 
         if (!options?.noAuth) {
             headers.set("Authorization", "Bearer " + await this.token);
@@ -118,25 +121,86 @@ export class MatrixClient extends HTTPMatrixClient {
     private setLoginData: (data: LoginResponse) => void = () => undefined;
     public loginData = new Promise<LoginResponse>((resolve) => { this.setLoginData = resolve });
 
-    private txcnt = 0;
-    get txID(): string {
-        return `${new Date().getTime()}-${this.txcnt++}`;
-    }
-
     constructor(relay: string, login: LoginRequest, private opt?: MatrixClientOptions) {
         super(relay);
-        this.request("POST", "login", { body: login, noAuth: true }).then(res => {
+        this.request("POST", { body: login, noAuth: true }, "login").then(res => {
             this.setLoginData(res);
             this.setAuthToken(res.access_token);
         });
     }
 
-    public async *poll(timeout: number = DefaultTimeout) {
+    private txcnt = 0;
+    get txID(): string {
+        return `${new Date().getTime()}-${this.txcnt++}`;
+    }
+
+    private eventIDs: Record<string, unknown> = {};
+    private isUnique(id?: string): boolean {
+        if (id === undefined || !(id in this.eventIDs)) {
+            if (id !== undefined) {
+                this.eventIDs[id] = {};
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // transform sync replies into a single stream of events
+    public async *events(timeout: number = DefaultTimeout): AsyncGenerator<Event> {
         let since: string | undefined = undefined;
         while (true) {
-            const res: SyncResponse = await this.request("GET", "sync", { query: { timeout, since } });
+            const res: SyncResponse = await this.request("GET", { query: { timeout, since } }, "sync");
             since = res.next_batch;
-            yield res;
+
+            for (const ev of [
+                ...(res.account_data?.events || []),
+                ...(res.to_device?.events || []),
+                ...(res.presence?.events || []),
+            ]) {
+                yield ev;
+            }
+
+            if (res.rooms === undefined) {
+                continue;
+            }
+
+            if (res.rooms.invite !== undefined) {
+                for (const [room_id, data] of Object.entries(res.rooms.invite)) {
+                    for (const ev of data.invite_state.events) {
+                        if (this.isUnique(ev.event_id)) {
+                            yield { ...ev, room_id } as RoomEvent;
+                        }
+                    }
+                }
+            }
+
+            if (res.rooms.join !== undefined) {
+                for (const [room_id, data] of Object.entries(res.rooms.join)) {
+                    for (const ev of [...(data.account_data?.events || []), ...(data.ephemeral?.events || [])]) {
+                        yield { ...ev, room_id } as RoomEvent;
+                    }
+                    for (const ev of [...(data.state?.events || []), ...(data.timeline?.events || [])]) {
+                        if (this.isUnique(ev.event_id)) {
+                            yield { ...ev, room_id } as RoomEvent;
+                        }
+                    }
+                }
+            }
+
+            if (res.rooms.leave !== undefined) {
+                for (const [room_id, data] of Object.entries(res.rooms.leave)) {
+                    if (data.account_data !== undefined) {
+                        for (const ev of data.account_data.events) {
+                            yield { ...ev, room_id } as RoomEvent;
+                        }
+                    }
+                    for (const ev of [...(data.state?.events || []), ...(data.timeline?.events || [])]) {
+                        if (this.isUnique(ev.event_id)) {
+                            yield { ...ev, room_id } as RoomEvent;
+                        }
+                    }
+                }
+            }
         }
     }
 }
