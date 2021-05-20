@@ -1,6 +1,7 @@
 // deno-lint-ignore-file camelcase
 
 import { sprintf } from "https://deno.land/std@0.97.0/fmt/printf.ts";
+import * as hex from "https://deno.land/std@0.97.0/encoding/hex.ts";
 import {
     CreateRoomRequest, EventID, InviteRequest, JoinRequest, JoinResponse, LoginRequest,
     LoginResponse, MatrixError, SyncRequest, SyncResponse,
@@ -9,12 +10,9 @@ import { MessageContent, Event, RoomEvent } from "./events.ts";
 
 import sodium, { KeyPair } from "https://raw.githubusercontent.com/ecadlabs/sodium/0.2.1/basic.ts";
 
-function hexBytes(bytes: number[] | Uint8Array): string {
-    return Array.from(bytes).map(x => ((x >> 4) & 0xf).toString(16) + (x & 0xf).toString(16)).join("");
-}
-
 // see https://github.com/airgap-it/beacon-node/blob/master/docker/crypto_auth_provider.py
-export function loginRequestFromKeyPair(kp: KeyPair): LoginRequest {
+export async function loginRequestFromKeyPair(kp: KeyPair): Promise<LoginRequest> {
+    await sodium.ready;
     const enquiry = sodium.from_string(`login:${Math.floor(Date.now() / 1000 / (5 * 60))}`);
     const digest = sodium.crypto_generichash(32, enquiry);
     const sig = sodium.crypto_sign_detached(digest, kp.privateKey);
@@ -24,16 +22,17 @@ export function loginRequestFromKeyPair(kp: KeyPair): LoginRequest {
         type: "m.login.password",
         identifier: {
             type: "m.id.user",
-            user: hexBytes(keyHash),
+            user: hex.encodeToString(keyHash),
         },
-        password: `ed:${hexBytes(sig)}:${hexBytes(kp.publicKey)}`,
-        device_id: hexBytes(kp.publicKey),
+        password: `ed:${hex.encodeToString(sig)}:${hex.encodeToString(kp.publicKey)}`,
+        device_id: hex.encodeToString(kp.publicKey),
     };
 }
 
-export function idFromKeyPair(kp: KeyPair, relay: string): string {
-    const keyHash = sodium.crypto_generichash(32, kp.publicKey);
-    return `@${hexBytes(keyHash)}:${relay}`
+export async function idFromPublicKey(pk: Uint8Array, url: string): Promise<string> {
+    await sodium.ready;
+    const keyHash = sodium.crypto_generichash(32, pk);
+    return `@${hex.encodeToString(keyHash)}:${new URL(url).hostname}`
 }
 
 const APIPrefix = "/_matrix/client/r0/";
@@ -74,21 +73,21 @@ class HTTPMatrixClient {
     private setToken: (token: string) => void = () => undefined;
     private token = new Promise<string>((resolve) => { this.setToken = resolve });
 
-    constructor(private relay: string) { }
+    constructor(private url: string) { }
 
     public setAuthToken(token: string) {
         this.setToken(token);
     }
 
-    public async request(method: "POST", options: { body: LoginRequest, noAuth: true }, ep: "login"): Promise<LoginResponse>;
-    public async request(method: "GET", options: { query: SyncRequest }, ep: "sync"): Promise<SyncResponse>;
-    public async request(method: "POST", options: { body: CreateRoomRequest }, ep: "createRoom"): Promise<JoinResponse>;
-    public async request(method: "POST", options: { body: InviteRequest }, ep: "rooms/%s/invite", ...args: [string]): Promise<void>;
-    public async request(method: "POST", options: { body: JoinRequest }, ep: "rooms/%s/join", ...args: [string]): Promise<JoinResponse>;
-    public async request(method: "PUT", options: { body: MessageContent }, ep: "rooms/%s/send/%s/%s", ...args: [string, string, string]): Promise<EventID>;
+    public async request(method: "POST", options: { body: LoginRequest, noAuth: true, init?: RequestInit }, ep: "login"): Promise<LoginResponse>;
+    public async request(method: "GET", options: { query: SyncRequest, init?: RequestInit }, ep: "sync"): Promise<SyncResponse>;
+    public async request(method: "POST", options: { body: CreateRoomRequest, init?: RequestInit }, ep: "createRoom"): Promise<JoinResponse>;
+    public async request(method: "POST", options: { body: InviteRequest, init?: RequestInit }, ep: "rooms/%s/invite", ...args: [string]): Promise<void>;
+    public async request(method: "POST", options: { body: JoinRequest, init?: RequestInit }, ep: "rooms/%s/join", ...args: [string]): Promise<JoinResponse>;
+    public async request(method: "PUT", options: { body: MessageContent, init?: RequestInit }, ep: "rooms/%s/send/%s/%s", ...args: [string, string, string]): Promise<EventID>;
     public async request(method: string, options: RequestOptions, ep: string, ...args: unknown[]): Promise<unknown> {
         const optstr = options?.query !== undefined ? buildOptions(options.query) : "";
-        const url = `https://${this.relay}${APIPrefix}${sprintf(ep, ...args.map(a => encodeURIComponent(String(a))))}${(optstr !== "" ? "?" + optstr : "")}`;
+        const url = `${this.url}${APIPrefix}${sprintf(ep, ...args.map(a => encodeURIComponent(String(a))))}${(optstr !== "" ? "?" + optstr : "")}`;
         const headers = new Headers(options?.init?.headers);
         const reqInit = { ...options?.init, method, headers };
 
@@ -112,7 +111,8 @@ class HTTPMatrixClient {
 }
 
 export interface MatrixClientOptions {
-    timeout?: number;
+    pollTimeout?: number;
+    signal?: AbortSignal;
 }
 
 const DefaultTimeout = 30000;
@@ -121,12 +121,15 @@ export class MatrixClient extends HTTPMatrixClient {
     private setLoginData: (data: LoginResponse) => void = () => undefined;
     public loginData = new Promise<LoginResponse>((resolve) => { this.setLoginData = resolve });
 
-    constructor(relay: string, login: LoginRequest, private opt?: MatrixClientOptions) {
-        super(relay);
-        this.request("POST", { body: login, noAuth: true }, "login").then(res => {
-            this.setLoginData(res);
-            this.setAuthToken(res.access_token);
-        });
+    constructor(url: string, private opt?: MatrixClientOptions) {
+        super(url);
+    }
+
+    public async login(login: LoginRequest, init?: RequestInit): Promise<LoginResponse> {
+        const res = await this.request("POST", { body: login, noAuth: true, init }, "login");
+        this.setLoginData(res);
+        this.setAuthToken(res.access_token);
+        return res;
     }
 
     private txcnt = 0;
@@ -146,10 +149,10 @@ export class MatrixClient extends HTTPMatrixClient {
     }
 
     // transform sync replies into a single stream of events
-    public async *events(timeout: number = DefaultTimeout): AsyncGenerator<Event> {
+    public async *events(timeout: number = this.opt?.pollTimeout || DefaultTimeout, init?: RequestInit): AsyncGenerator<Event> {
         let since: string | undefined = undefined;
         while (true) {
-            const res: SyncResponse = await this.request("GET", { query: { timeout, since } }, "sync");
+            const res: SyncResponse = await this.request("GET", { query: { timeout, since }, init }, "sync");
             since = res.next_batch;
 
             for (const ev of [
