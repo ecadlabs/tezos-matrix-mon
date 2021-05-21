@@ -118,7 +118,7 @@ class HTTPMatrixClient {
 
 export interface MatrixClientOptions {
     pollTimeout?: number;
-    signal?: AbortSignal;
+    seen?: Record<string, unknown>;
 }
 
 const DefaultTimeout = 30000;
@@ -143,15 +143,15 @@ export class MatrixClient extends HTTPMatrixClient {
         return `${new Date().getTime()}-${this.txcnt++}`;
     }
 
-    private eventIDs: Record<string, unknown> = {};
     private isUnique(id?: string): boolean {
-        if (id === undefined || !(id in this.eventIDs)) {
-            if (id !== undefined) {
-                this.eventIDs[id] = {};
-            }
+        if (id === undefined || this.opt?.seen === undefined) {
             return true;
         }
-        return false;
+        if (id in this.opt.seen) {
+            return false;
+        }
+        this.opt.seen[id] = {};
+        return true;
     }
 
     // transform sync replies into a single stream of events
