@@ -3,8 +3,6 @@
 import sodium, { KeyPair } from "https://raw.githubusercontent.com/ecadlabs/sodium/0.2.1/basic.ts";
 import * as hex from "https://deno.land/std@0.97.0/encoding/hex.ts";
 import * as log from "https://deno.land/std@0.97.0/log/mod.ts";
-import { ConsoleHandler } from "https://deno.land/std@0.97.0/log/handlers.ts";
-import { LogRecord } from "https://deno.land/std@0.97.0/log/logger.ts";
 import { MatrixClient, loginRequestFromKeyPair, idFromPublicKey } from "./matrix-client.ts";
 import { CreateRoomRequest, JoinRequest, LoginRequest } from "./types.ts";
 import { MatrixEvent, MessageContent } from "./events.ts";
@@ -131,19 +129,3 @@ export class MatrixMonitor {
     }
 }
 
-// mimic a structured JSON logger
-await log.setup({
-    handlers: {
-        default: new ConsoleHandler("INFO", {
-            formatter: (r: LogRecord) => {
-                const res = {
-                    timestamp: r.datetime,
-                    level: r.levelName,
-                    msg: r.msg,
-                    ...(Object.assign({}, ...r.args)),
-                };
-                return JSON.stringify(res);
-            }
-        }),
-    },
-});
