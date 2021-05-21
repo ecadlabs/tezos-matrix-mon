@@ -103,7 +103,13 @@ class HTTPMatrixClient {
         const req = new Request(url, reqInit);
         const res = await fetch(req);
         if (!res.ok) {
-            throw new HTTPError(req, res, await res.json());
+            try {
+                const j = await res.json();
+                throw new HTTPError(req, res, j);
+            } catch (_err) {
+                // JSON error
+                throw new Error(res.statusText);
+            }
         }
 
         return res.json();

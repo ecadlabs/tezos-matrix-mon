@@ -142,4 +142,4 @@ await log.setup({
     },
 });
 
-matrixMonitor({ url: "https://matrix.tez.ie:8448", interval: 30000 });
+matrixMonitor({ url: "https://matrix.papers.tech", interval: 30000 });
