@@ -6,6 +6,7 @@ const args = flags.parse(Deno.args);
 const opt: MonitorOptions = {
     url: args["url"] || "https://matrix.papers.tech",
     interval: args["interval"] || 30000,
+    timeout: args["timeout"],
 }
 
 new MatrixMonitor(opt).start();
