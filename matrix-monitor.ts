@@ -15,13 +15,13 @@ interface Peer {
     pub: Uint8Array;
 }
 
-interface MonitorOptions {
+export interface MonitorOptions {
     url: string;
     interval: number;
     timeout?: number;
 }
 
-class MatrixMonitor {
+export class MatrixMonitor {
     private room: string | undefined;
     private initiatorSeen: Record<string, unknown> = {};
     private responderSeen: Record<string, unknown> = {};
@@ -147,5 +147,3 @@ await log.setup({
         }),
     },
 });
-
-new MatrixMonitor({ url: "https://matrix.papers.tech", interval: 30000 }).start();
