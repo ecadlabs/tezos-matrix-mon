@@ -155,10 +155,10 @@ export class MatrixClient extends HTTPMatrixClient {
     }
 
     // transform sync replies into a single stream of events
-    public async *events(timeout: number = this.opt?.pollTimeout || DefaultTimeout, init?: RequestInit): AsyncGenerator<Event> {
+    public async *events(timeout: number = this.opt?.pollTimeout || DefaultTimeout, cancel: <T>(p: Promise<T>) => Promise<T> = (p) => p, init?: RequestInit): AsyncGenerator<Event> {
         let since: string | undefined = undefined;
         while (true) {
-            const res: SyncResponse = await this.request("GET", { query: { timeout, since }, init }, "sync");
+            const res: SyncResponse = await cancel(this.request("GET", { query: { timeout, since } as SyncRequest, init }, "sync"));
             since = res.next_batch;
 
             for (const ev of [
