@@ -29,12 +29,6 @@ export async function loginRequestFromKeyPair(kp: KeyPair): Promise<LoginRequest
     };
 }
 
-export async function idFromPublicKey(pk: Uint8Array, url: string): Promise<string> {
-    await sodium.ready;
-    const keyHash = sodium.crypto_generichash(32, pk);
-    return `@${hex.encodeToString(keyHash)}:${new URL(url).hostname}`
-}
-
 const APIPrefix = "/_matrix/client/r0/";
 
 function buildOptions(opt: unknown): string {
