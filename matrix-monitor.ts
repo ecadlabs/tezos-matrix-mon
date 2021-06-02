@@ -116,11 +116,9 @@ export class MatrixMonitor {
 
         for await (const _t of tick(this.opt.interval, true)) {
             const canceller = new Canceller();
-            if (this.opt.timeout) {
-                setTimeout(() => {
-                    canceller.cancel(new Error("timeout"));
-                }, this.opt.timeout);
-            }
+            const to = this.opt.timeout ?
+                setTimeout(() => canceller.cancel(new Error("timeout")), this.opt.timeout) :
+                undefined;
 
             let initiatorLoginResolve: (l: LoginResponse) => void = () => { };
             const initiatorPeer = new Promise<Peer>((resolve) => initiatorLoginResolve = (l: LoginResponse) => resolve({ id: l.user_id, pub: initiatorKeyPair.publicKey }));
@@ -155,6 +153,10 @@ export class MatrixMonitor {
             } catch (err) {
                 canceller.cancel(err);
                 log.error(err instanceof Error ? err.message : err);
+            } finally {
+                if (to) {
+                    clearTimeout(to);
+                }
             }
         }
     }

@@ -12,11 +12,12 @@ export class Canceller {
     private canceller = new Promise<void>((_resolve, reject) => this.rejectFunc = reject);
 
     public cancel(arg?: unknown) {
+        this.canceller.catch(() => { }); // eat exception
         this.rejectFunc(arg);
     }
 
     public async wrap<T>(target: Promise<T>): Promise<T> {
-        const res = await Promise.race([target.then(v => Promise.resolve({ v })), this.canceller.then(() => Promise.resolve(undefined))]);
+        const res = await Promise.race([target.then(v => ({ v })), this.canceller.then(undefined)]);
         if (res === undefined) {
             throw new Error(""); // unlikely    
         }
